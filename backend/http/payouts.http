@@ -1,0 +1,6 @@
+### Create payout
+POST http://localhost:8000/payouts?amount=12.34&currency=USD
+Idempotency-Key: demo-123
+
+### List
+GET http://localhost:8000/payouts
