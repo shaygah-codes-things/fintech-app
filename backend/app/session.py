@@ -51,3 +51,14 @@ def current_user_id(req: Request) -> int:
     if not sess or "uid" not in sess:
         raise HTTPException(401, detail="bad session")
     return int(sess["uid"])
+
+
+def set_user_on_request(request: Request):
+    """
+    Dependency for protected routes: validates session and stashes user_id on request.state
+    so rate-limiter can key per-user.
+    """
+    sess = get_session(request)
+    if not sess or "uid" not in sess:
+        raise HTTPException(401, detail="bad session")
+    request.state.user_id = int(sess["uid"])

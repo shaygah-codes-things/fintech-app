@@ -1,27 +1,35 @@
-from fastapi import APIRouter, Depends, Request, HTTPException, Header, Query
+from fastapi import APIRouter, Depends, Request, Response, HTTPException, Header, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from decimal import Decimal
 import os, time, random, httpx
+from sqlalchemy.exc import IntegrityError
 
 from app.db import get_db
-from app.session import current_user_id
+from app.session import current_user_id, set_user_on_request
 from app.models import Payout, IdempotencyKey
 from app.logging import logger
 from app.schemas import CreatePayoutRequest, PayoutOut, Page
+from app.rate_limit import limiter
 
 router = APIRouter(prefix="/payouts", tags=["payouts"])
 MOCK_URL = os.getenv("MOCK_URL", "http://localhost:8081/payouts")
 
 
-@router.post("", response_model=PayoutOut)
+@router.post(
+    "",
+    response_model=PayoutOut,
+    dependencies=[Depends(set_user_on_request)],
+)
+@limiter.limit("5/minute")  # per-user; falls back to per-IP if user not set
 def create_payout(
     body: CreatePayoutRequest,
-    req: Request,
+    request: Request,
+    response: Response,
     db: Session = Depends(get_db),
     idemp: str | None = Header(default=None, alias="Idempotency-Key"),
 ):
-    uid = current_user_id(req)
+    uid = current_user_id(request)
     if not idemp:
         raise HTTPException(400, detail="Idempotency-Key header required")
 
@@ -38,7 +46,7 @@ def create_payout(
             )
         raise HTTPException(409, detail="Idempotency key used but payout missing")
 
-    # Create payout + store idempotency key
+    # Create payout
     p = Payout(
         user_id=uid,
         amount=str(body.amount),
@@ -47,8 +55,30 @@ def create_payout(
     )
     db.add(p)
     db.flush()
-    db.add(IdempotencyKey(key=idemp, user_id=uid, payout_id=p.id))
-    db.commit()
+
+    # Link idempotency key with race-safety: catch unique conflicts and return the winner
+    try:
+        db.add(IdempotencyKey(key=idemp, user_id=uid, payout_id=p.id))
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        # someone else inserted this key first; return that payout and clean up this new one
+        other = db.get(IdempotencyKey, idemp)
+        if other and other.payout_id:
+            winner = db.get(Payout, other.payout_id)
+            try:
+                db.delete(p)  # remove the extra one we just created
+                db.commit()
+            except Exception:
+                db.rollback()
+            return PayoutOut(
+                id=winner.id,
+                amount=str(winner.amount),
+                currency=winner.currency,
+                status=winner.status,
+            )
+        raise HTTPException(409, detail="Idempotency key in use")
+
     logger.info("payout_created", payout_id=p.id, uid=uid)
 
     if os.getenv("ENV") == "test":
@@ -61,7 +91,7 @@ def create_payout(
     while attempts < 4:
         attempts += 1
         try:
-            headers = {"x-correlation-id": req.headers.get("x-correlation-id", "")}
+            headers = {"x-correlation-id": request.headers.get("x-correlation-id", "")}
             payload = {
                 "amount": str(body.amount),
                 "currency": body.currency,
@@ -91,17 +121,22 @@ def create_payout(
     )
 
 
-@router.get("", response_model=Page[PayoutOut])
+@router.get(
+    "",
+    response_model=Page[PayoutOut],
+    dependencies=[Depends(set_user_on_request)],
+)
+@limiter.limit("60/minute")  # per-user
 def list_payouts(
-    req: Request,
+    request: Request,
+    response: Response,
     db: Session = Depends(get_db),
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
 ):
-    uid = current_user_id(req)
+    uid = current_user_id(request)
     base = db.query(Payout).filter(Payout.user_id == uid)
     total = db.query(func.count()).select_from(base.subquery()).scalar()
-
     items = (
         base.order_by(Payout.id.desc()).offset((page - 1) * limit).limit(limit).all()
     )

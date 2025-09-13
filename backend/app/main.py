@@ -4,6 +4,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi import HTTPException
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from fastapi import HTTPException
+from fastapi.exceptions import RequestValidationError
+from fastapi.encoders import jsonable_encoder
+
+from slowapi.errors import RateLimitExceeded
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.middleware import SlowAPIMiddleware
+
+from app.rate_limit import limiter
 from pydantic import ValidationError
 from sqlalchemy.exc import IntegrityError
 from uuid import uuid4
@@ -20,6 +29,8 @@ from app.routers.payouts import router as payouts_router
 from app.webhooks import router as webhook_router
 
 app = FastAPI(title="Fintech Backend")
+
+app.state.limiter = limiter
 
 
 @app.middleware("http")
@@ -60,6 +71,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.add_middleware(SlowAPIMiddleware)
 
 
 # Error Helpers
@@ -109,6 +122,23 @@ async def on_request_validation_error(request: Request, exc: RequestValidationEr
     return _error_response(
         422, "validation_error", "invalid request", request, {"errors": exc.errors()}
     )
+
+
+@app.exception_handler(RateLimitExceeded)
+async def on_rate_limited(request: Request, exc: RateLimitExceeded):
+    # 1) Build the default response (sync function → do NOT await)
+    default_resp = _rate_limit_exceeded_handler(request, exc)
+
+    # 2) Your normalized JSON body
+    custom = _error_response(429, "rate_limited", "rate limit exceeded", request)
+
+    # 3) Copy SlowAPI headers (X-RateLimit-*, Retry-After)
+    for k, v in default_resp.headers.items():
+        lk = k.lower()
+        if lk.startswith("x-ratelimit") or lk == "retry-after":
+            custom.headers[k] = v
+
+    return custom
 
 
 # Mount routers

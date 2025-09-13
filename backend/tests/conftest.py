@@ -4,6 +4,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
+import uuid
 
 # test env
 os.environ["WEBHOOK_SHARED_SECRET"] = "test_secret"
@@ -61,6 +62,8 @@ def dbs():
 
 @pytest.fixture
 def login_cookie(client):
-    r = client.post("/auth/test-login", params={"email": "test@example.com"})
+    # unique user per test to isolate rate-limit counters
+    email = f"test+{uuid.uuid4().hex[:8]}@example.com"
+    r = client.post("/auth/test-login", params={"email": email})
     assert r.status_code == 200
     return {"Cookie": f"session={client.cookies.get('session')}"}

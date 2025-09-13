@@ -1,9 +1,10 @@
-from fastapi import APIRouter, Request, HTTPException, Response
+from fastapi import APIRouter, Request, Response, HTTPException, Response
 from fastapi.responses import RedirectResponse
 import os, secrets, base64, hashlib, httpx
 from app.session import get_session, set_session
 from app.db import SessionLocal
 from app.models import User
+from app.rate_limit import limiter, key_per_ip  # per-IP limits for auth endpoints
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -28,25 +29,29 @@ def _code_verifier():
 if os.getenv("ENV") == "test":
 
     @router.post("/test-login")
-    def test_login(resp: Response, email: str = "test@example.com"):
+    @limiter.limit("60/minute", key_func=key_per_ip)
+    def test_login(
+        request: Request, response: Response, email: str = "test@example.com"
+    ):
         with SessionLocal() as db:
             u = db.query(User).filter(User.email == email).one_or_none()
             if not u:
                 u = User(
                     provider="github",
-                    provider_user_id="test-id",
+                    provider_user_id=f"test-{email}",
                     email=email,
                     name="Test User",
                 )
                 db.add(u)
                 db.commit()
                 db.refresh(u)
-        set_session(resp, {"uid": u.id, "email": u.email})
+        set_session(response, {"uid": u.id, "email": u.email})
         return {"ok": True}
 
 
 @router.get("/login")
-def login(request: Request):
+@limiter.limit("10/minute", key_func=key_per_ip)  # conservative per-IP
+def login(request: Request, response: Response):
     state = secrets.token_urlsafe(16)
     ver, chal = _code_verifier()
     sess = get_session(request) or {}
@@ -61,7 +66,8 @@ def login(request: Request):
 
 
 @router.get("/callback")
-async def callback(request: Request, code: str, state: str):
+@limiter.limit("10/minute", key_func=key_per_ip)  # conservative per-IP
+async def callback(request: Request, response: Response, code: str, state: str):
     sess = get_session(request) or {}
     if state != sess.get("oauth_state"):
         raise HTTPException(400, "bad state")
@@ -96,7 +102,6 @@ async def callback(request: Request, code: str, state: str):
             (emails[0]["email"] if emails else None),
         )
 
-    # upsert user
     with SessionLocal() as db:
         u = (
             db.query(User)
@@ -123,7 +128,10 @@ async def callback(request: Request, code: str, state: str):
 
 
 @router.get("/me")
-def me(request: Request):
+@limiter.limit(
+    "120/minute"
+)  # per-user if session dep set on routes using it; /me can be hit often
+def me(request: Request, response: Response):
     sess = get_session(request)
     if not sess:
         raise HTTPException(401, "not authenticated")
@@ -131,7 +139,7 @@ def me(request: Request):
 
 
 @router.post("/logout")
-def logout(resp: Response):
-    # delete the signed cookie
-    resp.delete_cookie("session", path="/")
+@limiter.limit("60/minute")
+def logout(request: Request, response: Response):
+    response.delete_cookie("session", path="/")
     return {"ok": True}
