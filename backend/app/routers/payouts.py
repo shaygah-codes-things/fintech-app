@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, Request, Response, HTTPException, Header, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import func
+from sqlalchemy.dialects.postgresql import insert
 from decimal import Decimal
 import os, time, random, httpx
 from sqlalchemy.exc import IntegrityError
@@ -21,7 +22,7 @@ MOCK_URL = os.getenv("MOCK_URL", "http://localhost:8081/payouts")
     response_model=PayoutOut,
     dependencies=[Depends(set_user_on_request)],
 )
-@limiter.limit("5/minute")  # per-user; falls back to per-IP if user not set
+@limiter.limit("5/minute")
 def create_payout(
     body: CreatePayoutRequest,
     request: Request,
@@ -33,18 +34,35 @@ def create_payout(
     if not idemp:
         raise HTTPException(400, detail="Idempotency-Key header required")
 
-    # Idempotency lookup
-    existing = db.get(IdempotencyKey, idemp)
-    if existing:
-        payout = db.get(Payout, existing.payout_id) if existing.payout_id else None
-        if payout:
-            return PayoutOut(
-                id=payout.id,
-                amount=str(payout.amount),
-                currency=payout.currency,
-                status=payout.status,
-            )
-        raise HTTPException(409, detail="Idempotency key used but payout missing")
+    # Try to claim the idempotency key FIRST (no payout yet).
+    # If we win (rowcount==1), we own the key for this window.
+    # If we lose (rowcount==0), someone else already claimed it.
+    stmt = (
+        insert(IdempotencyKey)
+        .values(key=idemp, user_id=uid, payout_id=None)
+        .on_conflict_do_nothing(index_elements=[IdempotencyKey.key])
+    )
+    res = db.execute(stmt)
+    db.flush()
+
+    if res.rowcount == 0:
+        # Another request already claimed this key.
+        # If its payout_id is set, return that payout.
+        # If not yet set, briefly wait for the winner to finish.
+        deadline = time.time() + 3.0  # wait up to 3s
+        while time.time() < deadline:
+            existing = db.get(IdempotencyKey, idemp)
+            if existing and existing.payout_id:
+                payout = db.get(Payout, existing.payout_id)
+                return PayoutOut(
+                    id=payout.id,
+                    amount=str(payout.amount),
+                    currency=payout.currency,
+                    status=payout.status,
+                )
+            time.sleep(0.05)
+        # Still no payout_id; report "processing" (client can retry).
+        raise HTTPException(409, detail="Idempotency key currently processing")
 
     # Create payout
     p = Payout(
@@ -56,29 +74,11 @@ def create_payout(
     db.add(p)
     db.flush()
 
-    # Link idempotency key with race-safety: catch unique conflicts and return the winner
-    try:
-        db.add(IdempotencyKey(key=idemp, user_id=uid, payout_id=p.id))
-        db.commit()
-    except IntegrityError:
-        db.rollback()
-        # someone else inserted this key first; return that payout and clean up this new one
-        other = db.get(IdempotencyKey, idemp)
-        if other and other.payout_id:
-            winner = db.get(Payout, other.payout_id)
-            try:
-                db.delete(p)  # remove the extra one we just created
-                db.commit()
-            except Exception:
-                db.rollback()
-            return PayoutOut(
-                id=winner.id,
-                amount=str(winner.amount),
-                currency=winner.currency,
-                status=winner.status,
-            )
-        raise HTTPException(409, detail="Idempotency key in use")
-
+    # Back-fill payout_id on the key and commit
+    db.query(IdempotencyKey).filter(IdempotencyKey.key == idemp).update(
+        {"payout_id": p.id}
+    )
+    db.commit()
     logger.info("payout_created", payout_id=p.id, uid=uid)
 
     if os.getenv("ENV") == "test":

@@ -12,6 +12,10 @@ from slowapi.errors import RateLimitExceeded
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.middleware import SlowAPIMiddleware
 
+import os, asyncio
+from contextlib import asynccontextmanager
+from app.cleanup import cleanup_idempotency_keys
+
 from app.rate_limit import limiter
 from pydantic import ValidationError
 from sqlalchemy.exc import IntegrityError
@@ -28,7 +32,21 @@ from app.routers.auth import router as auth_router
 from app.routers.payouts import router as payouts_router
 from app.webhooks import router as webhook_router
 
-app = FastAPI(title="Fintech Backend")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    task = None
+    try:
+        if os.getenv("ENV") != "test":
+            task = asyncio.create_task(cleanup_idempotency_keys())
+        yield
+    finally:
+        if task:
+            task.cancel()
+
+
+app = FastAPI(title="Fintech Backend", lifespan=lifespan)
+
 
 app.state.limiter = limiter
 
