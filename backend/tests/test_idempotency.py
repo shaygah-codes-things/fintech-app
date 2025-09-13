@@ -6,7 +6,7 @@ def test_idempotent_create_one_row(client, login_cookie, dbs):
     r1 = client.post(
         "/payouts",
         headers={"Idempotency-Key": "k-111", **login_cookie},
-        params={"amount": "10.00", "currency": "USD"},
+        json={"amount": "10.00", "currency": "USD"},
     )
     assert r1.status_code == 200
     body1 = r1.json()
@@ -15,7 +15,7 @@ def test_idempotent_create_one_row(client, login_cookie, dbs):
     r2 = client.post(
         "/payouts",
         headers={"Idempotency-Key": "k-111", **login_cookie},
-        params={"amount": "10.00", "currency": "USD"},
+        json={"amount": "10.00", "currency": "USD"},
     )
     assert r2.status_code == 200
 

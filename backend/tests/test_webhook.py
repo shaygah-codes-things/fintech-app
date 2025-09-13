@@ -13,7 +13,7 @@ def test_webhook_updates_status(client, login_cookie, dbs):
     r = client.post(
         "/payouts",
         headers={"Idempotency-Key": "k-222", **login_cookie},
-        params={"amount": "25.00", "currency": "USD"},
+        json={"amount": "25.00", "currency": "USD"},
     )
     assert r.status_code == 200
     pid = r.json()["id"]
@@ -46,7 +46,7 @@ def test_webhook_rejects_bad_signature(client, login_cookie, dbs):
     r = client.post(
         "/payouts",
         headers={"Idempotency-Key": "k-333", **login_cookie},
-        params={"amount": "15.00", "currency": "USD"},
+        json={"amount": "15.00", "currency": "USD"},
     )
     pid = r.json()["id"]
 

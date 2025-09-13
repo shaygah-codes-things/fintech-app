@@ -4,6 +4,9 @@ from fastapi import APIRouter, Request, Response, HTTPException
 COOKIE_NAME = "session"
 SESSION_SECRET = os.getenv("SESSION_SECRET", "devsecret").encode()
 
+SECURE_COOKIES = os.getenv("SECURE_COOKIES", "false").lower() == "true"
+SAMESITE = os.getenv("COOKIE_SAMESITE", "lax")
+
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
@@ -37,13 +40,13 @@ def set_session(resp: Response, payload: dict) -> None:
         COOKIE_NAME,
         f"{data}.{sig}",
         httponly=True,
-        samesite="lax",
+        secure=SECURE_COOKIES,
+        samesite=SAMESITE,
         path="/",
     )
 
 
 def current_user_id(req: Request) -> int:
-    """Used by payouts router to require auth."""
     sess = get_session(req)
     if not sess or "uid" not in sess:
         raise HTTPException(401, detail="bad session")

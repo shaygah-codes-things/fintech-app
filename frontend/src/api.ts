@@ -22,12 +22,14 @@ export async function createPayout(
   currency: string,
   idempKey: string
 ) {
-  const url = `/payouts?amount=${encodeURIComponent(
-    amount
-  )}&currency=${encodeURIComponent(currency)}`;
-  const res = await req(url, {
+  const body = { amount, currency };
+  const res = await req(`/payouts`, {
     method: "POST",
-    headers: { "Idempotency-Key": idempKey },
+    headers: {
+      "Idempotency-Key": idempKey,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
   });
   return res.json();
 }
