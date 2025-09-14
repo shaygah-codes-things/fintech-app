@@ -1,0 +1,259 @@
+openapi: 3.0.3
+info:
+  title: Fintech Backend
+  version: "1.0.0"
+servers:
+  - url: http://localhost:8000
+tags:
+  - name: auth
+  - name: payouts
+  - name: webhooks
+  - name: system
+
+paths:
+  /health:
+    get:
+      summary: Health check
+      tags: [system]
+      responses:
+        "200":
+          description: OK
+
+  /auth/login:
+    get:
+      summary: Begin OAuth login (GitHub, state+PKCE)
+      tags: [auth]
+      responses:
+        "302":
+          description: Redirect to GitHub OAuth
+
+  /auth/callback:
+    get:
+      summary: OAuth callback (GitHub)
+      tags: [auth]
+      parameters:
+        - in: query
+          name: code
+          required: true
+          schema: { type: string }
+        - in: query
+          name: state
+          required: true
+          schema: { type: string }
+      responses:
+        "302":
+          description: Redirect to frontend after session set
+        "400":
+          description: Bad/expired state or token exchange failure
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorBody" }
+
+  /auth/me:
+    get:
+      summary: Get current user (from session)
+      tags: [auth]
+      security: [{ cookieAuth: [] }]
+      responses:
+        "200":
+          description: Session user
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  user_id: { type: integer }
+                  email: { type: string, format: email }
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorBody" }
+
+  /auth/logout:
+    post:
+      summary: Clear session
+      tags: [auth]
+      security: [{ cookieAuth: [] }]
+      responses:
+        "200":
+          description: Logged out
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+
+  /payouts:
+    post:
+      summary: Create payout (idempotent)
+      tags: [payouts]
+      security: [{ cookieAuth: [] }]
+      parameters:
+        - in: header
+          name: Idempotency-Key
+          required: true
+          schema: { type: string }
+          description: Unique key to ensure idempotency.
+        - in: header
+          name: X-Correlation-ID
+          required: false
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PayoutCreate" }
+      responses:
+        "200":
+          description: Payout created or already exists for the idempotency key
+          headers:
+            X-Correlation-ID:
+              description: Correlation ID for tracing
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Payout" }
+        "409":
+          description: Idempotency key currently processing
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorBody" }
+        "422":
+          description: Validation error
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorBody" }
+        "429":
+          description: Rate limited
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorBody" }
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorBody" }
+
+    get:
+      summary: List payouts (paginated, current user)
+      tags: [payouts]
+      security: [{ cookieAuth: [] }]
+      parameters:
+        - in: query
+          name: page
+          schema: { type: integer, minimum: 1, default: 1 }
+        - in: query
+          name: limit
+          schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+        - in: header
+          name: X-Correlation-ID
+          required: false
+          schema: { type: string }
+      responses:
+        "200":
+          description: Payout page
+          headers:
+            X-Correlation-ID:
+              description: Correlation ID for tracing
+              schema: { type: string }
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PagePayout"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorBody" }
+
+  /webhooks/payments:
+    post:
+      summary: Payments provider webhook (mock)
+      tags: [webhooks]
+      parameters:
+        - in: header
+          name: x-sig
+          required: true
+          schema: { type: string }
+          description: HMAC signature using shared secret over "ts.payload".
+        - in: header
+          name: x-sig-ts
+          required: true
+          schema: { type: string }
+          description: Unix timestamp (seconds). Payload rejected if >5 minutes skew.
+        - in: header
+          name: X-Correlation-ID
+          required: false
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/WebhookEvent" }
+      responses:
+        "200":
+          description: Acknowledged (idempotent on event_id)
+        "400":
+          description: Invalid signature, stale timestamp, or payload
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorBody" }
+
+components:
+  securitySchemes:
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: session
+
+  schemas:
+    ErrorBody:
+      type: object
+      properties:
+        error: { type: string }
+        message: { type: string }
+        details:
+          nullable: true
+        request_id:
+          type: string
+          nullable: true
+
+    PayoutCreate:
+      type: object
+      required: [amount, currency]
+      properties:
+        amount: { type: number, minimum: 0.01, example: 10.00 }
+        currency:
+          type: string
+          enum: [USD, EUR, GBP]
+
+    Payout:
+      type: object
+      properties:
+        id: { type: integer }
+        amount: { type: string, example: "10.00" }
+        currency: { type: string, enum: [USD, EUR, GBP] }
+        status:
+          type: string
+          enum: [processing, paid, failed]
+
+    PagePayout:
+      type: object
+      properties:
+        page: { type: integer, example: 1 }
+        limit: { type: integer, example: 10 }
+        total: { type: integer, example: 42 }
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/Payout" }
+
+    WebhookEvent:
+      type: object
+      properties:
+        event_id: { type: string }
+        payout_ref: { type: string }
+        status:
+          type: string
+          enum: [processing, paid, failed]

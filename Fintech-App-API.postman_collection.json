@@ -1,0 +1,316 @@
+{
+  "info": {
+    "name": "Fintech App API (Local)",
+    "_postman_id": "2d2d5258-1e8e-4882-ba1f-dfe2fb10d20b",
+    "description": "Postman collection for your fintech-app backend running locally.\n\nBefore you use it:\n1) Set `session` cookie after logging in via the browser (GitHub OAuth).\n2) Optionally set `webhook_shared_secret` if you want the webhook request to auto-sign.\n",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Health",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "X-Correlation-ID",
+            "value": "{{correlation_id}}"
+          }
+        ],
+        "url": {
+          "raw": "{{base_url}}/health",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "health"
+          ]
+        },
+        "description": "Simple health check."
+      }
+    },
+    {
+      "name": "Auth: Begin OAuth (opens browser)",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "X-Correlation-ID",
+            "value": "{{correlation_id}}"
+          }
+        ],
+        "url": {
+          "raw": "{{base_url}}/auth/login",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "auth",
+            "login"
+          ]
+        },
+        "description": "Begins GitHub OAuth (state + PKCE). Best used in a browser."
+      }
+    },
+    {
+      "name": "Auth: Me (requires session cookie)",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Cookie",
+            "value": "session={{session}}"
+          },
+          {
+            "key": "X-Correlation-ID",
+            "value": "{{correlation_id}}"
+          }
+        ],
+        "url": {
+          "raw": "{{base_url}}/auth/me",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "auth",
+            "me"
+          ]
+        },
+        "description": "Returns session user. Paste your session cookie value into the `session` variable first."
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('200 OK', function () { pm.response.to.have.status(200); });",
+              "pm.test('Has user_id', function () { pm.expect(pm.response.json()).to.have.property('user_id'); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Payouts: Create (idempotent)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Cookie",
+            "value": "session={{session}}"
+          },
+          {
+            "key": "Idempotency-Key",
+            "value": "{{idempotency_key}}"
+          },
+          {
+            "key": "X-Correlation-ID",
+            "value": "{{correlation_id}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{base_url}}/payouts",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "payouts"
+          ]
+        },
+        "description": "Creates a payout. Uses an auto-generated Idempotency-Key each run.",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"amount\": 1200.5,\n  \"currency\": \"USD\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Generate a unique idempotency key and correlation id",
+              "pm.variables.set('idempotency_key', 'ikey-' + Date.now());",
+              "pm.variables.set('correlation_id', 'cid-' + Date.now());"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('201 or 200 OK', function () { pm.expect([200, 201]).to.include(pm.response.code); });",
+              "pm.test('Has payout id', function(){ pm.expect(pm.response.json()).to.have.property('id'); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Payouts: List (paginated)",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Cookie",
+            "value": "session={{session}}"
+          },
+          {
+            "key": "X-Correlation-ID",
+            "value": "{{correlation_id}}"
+          }
+        ],
+        "url": {
+          "raw": "{{base_url}}/payouts?page={{page}}&limit={{limit}}",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "payouts?page={{page}}&limit={{limit}}"
+          ]
+        },
+        "description": "Lists payouts for the current user. Adjust `page` and `limit` variables."
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('200 OK', function () { pm.response.to.have.status(200); });",
+              "pm.test('Has items array', function () { pm.expect(pm.response.json()).to.have.property('items'); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Webhook: payments (simulate)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-sig-ts",
+            "value": "{{webhook_ts}}"
+          },
+          {
+            "key": "x-sig",
+            "value": "{{webhook_sig}}"
+          },
+          {
+            "key": "X-Correlation-ID",
+            "value": "{{correlation_id}}"
+          }
+        ],
+        "url": {
+          "raw": "{{base_url}}/webhooks/payments",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "webhooks",
+            "payments"
+          ]
+        },
+        "description": "Simulates the payments provider webhook.\nSet `webhook_shared_secret` variable to your WEBHOOK_SHARED_SECRET so the signature is valid.",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"event_id\": \"evt_1757881535\",\n  \"payout_ref\": \"demo_ref_1\",\n  \"status\": \"paid\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Prepare webhook timestamp and signature",
+              "const ts = Math.floor(Date.now() / 1000).toString();",
+              "pm.variables.set('webhook_ts', ts);",
+              "const secret = pm.variables.get('webhook_shared_secret') || '';",
+              "let body = pm.request.body && pm.request.body.raw ? pm.request.body.raw : '';",
+              "// Signature format: HMAC-SHA256 of `${ts}.${body}`",
+              "const msg = ts + '.' + body;",
+              "let sig = '';",
+              "if (secret) {",
+              "  sig = CryptoJS.HmacSHA256(msg, secret).toString(CryptoJS.enc.Hex);",
+              "} else {",
+              "  sig = 'missing-secret';",
+              "}",
+              "pm.variables.set('webhook_sig', sig);",
+              "// new correlation id for webhook",
+              "pm.variables.set('correlation_id', 'wh-' + Date.now());"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('200 OK', function () { pm.expect(pm.response.code).to.be.oneOf([200]); });"
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:8000"
+    },
+    {
+      "key": "session",
+      "value": "",
+      "type": "string",
+      "description": "Paste your session cookie value after logging in via the browser."
+    },
+    {
+      "key": "page",
+      "value": "1"
+    },
+    {
+      "key": "limit",
+      "value": "10"
+    },
+    {
+      "key": "webhook_shared_secret",
+      "value": "",
+      "type": "string",
+      "description": "Your WEBHOOK_SHARED_SECRET from .env (optional\u2014only for webhook signing)."
+    }
+  ],
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "if (!pm.variables.get('correlation_id')) {",
+          "  pm.variables.set('correlation_id', 'cid-' + Date.now());",
+          "}"
+        ]
+      }
+    }
+  ]
+}
